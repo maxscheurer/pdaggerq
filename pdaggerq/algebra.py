@@ -216,8 +216,39 @@ class TensorTerm:
                 else:  # route to output with ->
                     tensor_index_ranges.append(idx_type)
 
+            # HACK for adcc
             if bt.name in ['t1', 't2', 't3', 'l2', 'l1', 'r1', 'r2']:
                 einsum_tensors.append(bt.name)
+                if len(string_indices) == 2:
+                    string_indices = string_indices[::-1]
+                elif len(string_indices) == 4:
+                    si = string_indices
+                    string_indices = [si[2], si[3], si[0], si[1]]
+            # HACK for adcc
+            elif bt.name == 'f':
+                einsum_tensors.append('hf.f' + "".join(tensor_index_ranges))
+            elif bt.name == 'g':
+                def to_canonical(blks):
+                    blk = "".join(blks)
+                    canblks = ['oooo', 'ooov', 'oovv', 'ovov', 'ovvv', 'vvvv']
+                    if blk in canblks:
+                        return "", (0, 1, 2, 3), blk
+                    ps = [
+                        (-1, (1, 0, 2, 3)),
+                        (-1, (0, 1, 3, 2)),
+                        (+1, (1, 0, 3, 2)),
+                        (+1, (2, 3, 0, 1)),
+                        (-1, (3, 2, 0, 1)),
+                    ]
+                    for p in ps:
+                        lbl = "".join([blks[i] for i in p[1]])
+                        if lbl in canblks:
+                            sgn = "-" if p[0] == -1 else ""
+                            return sgn, p[1], lbl
+                    raise ValueError(blks)
+                sgn, perm, blk = to_canonical(tensor_index_ranges)
+                string_indices = [string_indices[i] for i in perm]
+                einsum_tensors.append(f'{sgn}hf.' + blk)
             else:
                 einsum_tensors.append(
                     bt.name + "[" + ", ".join(tensor_index_ranges) + "]")
@@ -254,14 +285,16 @@ class TensorTerm:
                                         xx in output_variables]))
             outstrings = [[+1, original_out]]
 
+            antisymm = []
             for act in self.actions:
                 # check if we have a permutation
                 if not isinstance(act, ContractionPermuter):
                     raise NotImplementedError(
                         "currently only permutations are implemented")
-
+                # print(act)
                 # get all sets of exchanged indices
                 exchanged_indices = [xx.name for xx in act.indices]
+                # print(exchanged_indices, outstrings)
 
                 permuted_outstrings = []
                 for perm in outstrings:
@@ -273,30 +306,37 @@ class TensorTerm:
                     ii, jj = tmp_outsrings.index(
                         exchanged_indices[0]), tmp_outsrings.index(
                         exchanged_indices[1])
+                    # print(ii, jj)
                     tmp_outsrings[ii], tmp_outsrings[jj] = tmp_outsrings[jj], \
                                                            tmp_outsrings[ii]
-
+                    antisymm.append((ii, jj))
                     # store permuted set with a -1 phase
                     permuted_outstrings.append([perm[0] * -1, tmp_outsrings])
 
-                outstrings = outstrings + permuted_outstrings
+                # outstrings = outstrings + permuted_outstrings
 
             # now that we've generated all the permutations
             # generate the reshapped summands.
-            teinsum_string = 'contracted_intermediate' + " " + teinsum_string + "\n"
-            teinsum_string += update_val
-            teinsum_string += " += "
-            update_val_line = []
-            for ots in outstrings:
-                new_string = ""
-                new_string += '{: 5.5f} * '.format(ots[0])
-                if tuple(ots[1]) == tuple(original_out):
-                    new_string += 'contracted_intermediate'
-                else:
-                    new_string += 'einsum(\'{}->{}\', contracted_intermediate) '.format(
-                        ''.join(original_out), "".join(ots[1]))
-                update_val_line.append(new_string)
-            teinsum_string += " + ".join(update_val_line)
+            # HACK for adcc
+            teinsum_string = update_val + " " + '+' + teinsum_string
+            for a in antisymm:
+                teinsum_string += f".antisymmetrise({a[0]}, {a[1]})"
+            teinsum_string += f"*{2**len(antisymm)}"
+            
+            # teinsum_string = 'contracted_intermediate' + " " + teinsum_string + ".evaluate()" + "\n"
+            # teinsum_string += update_val
+            # teinsum_string += " += "
+            # update_val_line = []
+            # for ots in outstrings:
+            #     new_string = ""
+            #     new_string += '{: 5.5f} * '.format(ots[0])
+            #     if tuple(ots[1]) == tuple(original_out):
+            #         new_string += 'contracted_intermediate'
+            #     else:
+            #         new_string += 'einsum(\'{}->{}\', contracted_intermediate) '.format(
+            #             ''.join(original_out), "".join(ots[1]))
+            #     update_val_line.append(new_string)
+            # teinsum_string += " + ".join(update_val_line)
         return teinsum_string
 
 
